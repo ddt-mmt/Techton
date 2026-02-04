@@ -262,7 +262,7 @@ start_test() {
             -e "s/__DURATION__/$duration/g" "$TEMPLATE_USE" > "$RUN_FILE_JMX"
 
         tput civis
-        docker run --rm --name "$CONTAINER_NAME" \
+        docker run --rm --name "$CONTAINER_NAME" --dns "$t_ip" \
           --memory="4g" --cpus="2.0" \
           -e JVM_ARGS="$JVM_ARGS" \
           -v "$PROJECT_ROOT:/tests" -w /tests \
@@ -310,7 +310,7 @@ start_test() {
         
         if [[ "$env_choice" == "1" ]]; then
              # Docker Mode
-            docker run --rm -it --name "$CONTAINER_NAME" \
+            docker run --rm -it --name "$CONTAINER_NAME" --dns "$t_ip" \
               -v "$PROJECT_ROOT:/tests" \
               $DOCKER_IMAGE_K6 run "results/run_current.js" | tee "$TEMP_LOG"
         else
