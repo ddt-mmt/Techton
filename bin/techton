@@ -1,0 +1,283 @@
+#!/bin/bash
+
+# ==============================================================================
+# TECHTON - Active Directory Load Testing & Stress Analysis Tool
+# Version: 1.0.0 (Initial Release)
+# Author: [Your Name/Handle]
+# License: MIT
+# ==============================================================================
+
+# --- ENVIRONMENT SETUP ---
+# Detect where the script is installed to find templates correctly
+# (Resolve symlinks to find real path)
+SOURCE=${BASH_SOURCE[0]}
+while [ -L "$SOURCE" ]; do # resolve $SOURCE until the file is no longer a symlink
+  DIR=$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )
+  SOURCE=$(readlink "$SOURCE")
+  [[ $SOURCE != /* ]] && SOURCE=$DIR/$SOURCE # if $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+done
+BIN_DIR=$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )
+PROJECT_ROOT="$(dirname "$BIN_DIR")"
+
+# Config Paths
+TEMPLATE_FILE="$PROJECT_ROOT/templates/ad_load.jmx"
+RESULTS_DIR="$PROJECT_ROOT/results"
+HISTORY_FILE="$RESULTS_DIR/history.csv"
+RUN_FILE="$RESULTS_DIR/run_current.jmx"
+TEMP_LOG="/tmp/techton_out.txt"
+
+# Colors
+BOLD='\033[1m'
+BLUE='\033[38;5;33m'
+CYAN='\033[38;5;87m'
+GREEN='\033[38;5;46m'
+RED='\033[38;5;196m'
+YELLOW='\033[38;5;226m'
+WHITE='\033[38;5;255m'
+GREY='\033[38;5;240m'
+NC='\033[0m'
+
+# Ensure directories exist
+mkdir -p "$RESULTS_DIR"
+if [ ! -f "$HISTORY_FILE" ]; then
+    echo "Timestamp,Target,Users,Duration,AvgLatency,Errors,Status,Path" > "$HISTORY_FILE"
+fi
+
+# --- CLEANUP FUNCTION ---
+cleanup() {
+    tput cnorm
+    if [ -f "$RUN_FILE" ]; then rm -f "$RUN_FILE"; fi
+    if [ -f "$TEMP_LOG" ]; then rm -f "$TEMP_LOG"; fi
+}
+trap cleanup EXIT INT TERM
+
+# --- UI FUNCTIONS ---
+draw_logo() {
+    clear
+    echo -e "${BLUE}${BOLD}"
+    cat << "EOF"
+  ████████╗███████╗ ██████╗██╗  ██╗████████╗ ██████╗ ███╗   ██╗
+  ╚══██╔══╝██╔════╝██╔════╝██║  ██║╚══██╔══╝██╔═══██╗████╗  ██║
+     ██║   █████╗  ██║     ███████║   ██║   ██║   ██║██╔██╗ ██║
+     ██║   ██╔══╝  ██║     ██╔══██║   ██║   ██║   ██║██║╚██╗██║
+     ██║   ███████╗╚██████╗██║  ██║   ██║   ╚██████╔╝██║ ╚████║
+     ╚═╝   ╚══════╝ ╚═════╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═══╝
+             Enterprise AD Stress Testing Tool v1.0
+EOF
+    echo -e "${NC}"
+    echo "------------------------------------------------------------------"
+}
+
+view_history() {
+    draw_logo
+    echo -e "${BOLD}📂 EXECUTION HISTORY:${NC}"
+    echo "---------------------------------------------------------------------------------"
+    printf "% -4s | % -19s | % -15s | % -8s | % -8s | % -10s\n" "No" "Date" "Target" "Users" "Lat" "Status"
+    echo "---------------------------------------------------------------------------------"
+    
+    mapfile -t history_lines < <(tail -n +2 "$HISTORY_FILE")
+    
+    if [ ${#history_lines[@]} -eq 0 ]; then
+        echo "   (No history found)"
+        echo ""
+        read -p "Press Enter to return..."
+        main_menu
+        return
+    fi
+
+    i=1
+    for line in "${history_lines[@]}"; do
+        IFS=',' read -r ts target users dur lat err stat path <<< "$line"
+        if [[ "$stat" == "PASS" ]]; then color=$GREEN; 
+        elif [[ "$stat" == "WARN" ]]; then color=$YELLOW;
+        else color=$RED; fi
+        printf "% -4s | % -19s | % -15s | % -8s | % -8s | ${color}% -10s${NC}\n" "$i" "$ts" "$target" "$users" "${lat}ms" "$stat"
+        ((i++))
+    done
+    echo "---------------------------------------------------------------------------------"
+    echo ""
+    read -p "Enter Number to view details (or 'q' to back): " choice
+    
+    if [[ "$choice" == "q" ]]; then main_menu; return; fi
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#history_lines[@]}" ]; then
+        main_menu; return;
+    fi
+
+    index=$((choice-1))
+    IFS=',' read -r ts target users dur lat err stat path <<< "${history_lines[$index]}"
+    
+    draw_logo
+    echo -e "${BOLD}📄 REPORT DETAIL #${choice}${NC}"
+    echo "--------------------------------------------------------"
+    echo -e "📅 Date       : $ts"
+    echo -e "🎯 Target     : $target"
+    echo -e "👥 Load       : $users Users (Duration: ${dur}s)"
+    echo "--------------------------------------------------------"
+    echo -e "⏱️  Latency    : $lat ms"
+    echo -e "🛡️  Errors     : $err"
+    echo -e "📊 Status     : $stat"
+    echo "--------------------------------------------------------"
+    echo -e "📂 Report Path: ${GREY}$path${NC}"
+    echo ""
+    read -p "Press Enter to return..."
+    view_history
+}
+
+start_test() {
+    draw_logo
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}❌ Critical Error: Docker is not installed.${NC}"
+        exit 1
+    fi
+
+    # Defaults
+    default_ip="192.168.100.236"
+    read -p "🎯 Target IP [$default_ip]: " target_ip
+    target_ip=${target_ip:-$default_ip}
+
+    default_user="tester"
+    read -p "👤 Username (No Domain) [$default_user]: " username
+    username=${username:-$default_user}
+
+    default_dn="CN=$username,OU=User,OU=BRIN,DC=net,DC=brin,DC=go,DC=id"
+    read -p "   Use this DN? (y/n) [y]: " confirm_dn
+    confirm_dn=${confirm_dn:-y}
+    if [[ "$confirm_dn" != "y" ]]; then
+        read -p "   Manual DN: " user_dn
+    else
+        user_dn=$default_dn
+    fi
+
+    echo -n "🔑 Password: "
+    read -s password
+    echo ""
+    echo ""
+
+    echo -e "${BOLD}--- Load Configuration ---${NC}"
+    read -p "👥 User Threads [10]: " threads
+    threads=${threads:-10}
+
+    # Auto Calc
+    rampup=$((threads / 5))
+    if [ $rampup -lt 1 ]; then rampup=1; fi
+    auto_duration=$((rampup + 60))
+    if [ $auto_duration -lt 30 ]; then auto_duration=30; fi
+
+    echo -e "\n🤖 ${CYAN}AUTO-OPTIMIZER:${NC}"
+    echo -e "   - Ramp-Up Time  : ${rampup} sec"
+    echo -e "   - Rec. Duration : ${auto_duration} sec"
+    read -p "⏱️  Duration (Enter for default): " duration
+    duration=${duration:-$auto_duration}
+
+    echo ""
+    read -p "Press Enter to LAUNCH TECHTON..."
+
+    # Setup Unique Run Folder
+    TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+    RUN_DIR_NAME="run_${TIMESTAMP}_${threads}u"
+    CURRENT_REPORT_DIR="$RESULTS_DIR/$RUN_DIR_NAME"
+    mkdir -p "$CURRENT_REPORT_DIR"
+
+    # Generate Config
+    sed -e "s/__TARGET_IP__/$target_ip/g"
+        -e "s/__ROOT_DN__/DC=net,DC=brin,DC=go,DC=id/g"
+        -e "s/__USER_DN__/$user_dn/g"
+        -e "s/__PASSWORD__/$password/g"
+        -e "s/__THREADS__/$threads/g"
+        -e "s/__RAMPUP__/$rampup/g"
+        -e "s/__DURATION__/$duration/g" \
+        "$TEMPLATE_FILE" > "$RUN_FILE"
+
+    # Run Docker
+    draw_logo
+    tput civis 
+    CONTAINER_NAME="techton_${TIMESTAMP//[:_]/}" 
+
+    docker run --rm --name "$CONTAINER_NAME" \
+      -v "$PROJECT_ROOT:/tests" \
+      -w /tests \
+      justb4/jmeter:5.5 \
+      -Jsummariser.interval=3 \
+      -n \
+      -t "results/run_current.jmx" \
+      -l "results/$RUN_DIR_NAME/result.jtl" \
+      -e -o "results/$RUN_DIR_NAME/dashboard" \
+      2>&1 | tee "$TEMP_LOG" | \
+      awk -v target="$target_ip" -v users="$threads" -v duration="$duration" \
+          -v green="$GREEN" -v red="$RED" -v blue="$BLUE" -v yellow="$YELLOW" -v bold="$BOLD" -v nc="$NC" ' 
+      BEGIN { print "Initializing container..." }
+      /summary \+/ { 
+          speed = "0.0/s"; avg = "0"; err = "0"; err_pct = "(0.00%)"
+          for(i=1;i<=NF;i++) {
+              if($i ~ /\/s$/) speed=$i;
+              if($i == "Avg:") avg=$(i+1);
+              if($i == "Err:") { err=$(i+1); err_pct=$(i+2); }
+          }
+          status_color = green
+          if (err > 0) status_color = red
+          
+          printf "\033[2J\033[H"
+          print blue bold
+          print "  ╔════════════════════════════════════════════════════════╗"
+          print "  ║             ⚡ TECHTON - LIVE MONITOR ⚡               ║"
+          print "  ╚════════════════════════════════════════════════════════╝" nc
+          print ""
+          printf "  🎯 Target    : %s\n", target
+          printf "  👥 Load      : %s Users\n", users
+          printf "  ⏳ Remaining : (Running... Total %ss)\n", duration
+          print "  --------------------------------------------------------"
+          print ""
+          print "  " bold "REAL-TIME METRICS:" nc
+          printf "  🚀 Throughput : " yellow "%-10s" nc " (Login/sec)\n", speed
+          printf "  ⏱️  Latency    : " blue "%-10s" nc " ms\n", avg
+          printf "  🛡️  Errors     : " status_color "%s %s" nc "\n", err, err_pct
+          print ""
+          fflush()
+      }
+      '
+tput cnorm
+
+    # --- ANALYSIS ---
+    echo ""
+    echo -e "${BOLD}📊 ANALYZING RESULTS...${NC}"
+    
+    LAST_LINE=$(grep "summary =" "$TEMP_LOG" | tail -n 1)
+    AVG_LATENCY=$(echo "$LAST_LINE" | awk -F 'Avg: ' '{print $2}' | awk '{print $1}')
+    ERR_COUNT=$(echo "$LAST_LINE" | awk -F 'Err: ' '{print $2}' | awk '{print $1}')
+    AVG_LATENCY=${AVG_LATENCY:-0}
+    ERR_COUNT=${ERR_COUNT:-0}
+
+    STATUS="PASS"
+    if [ "$ERR_COUNT" -gt 0 ]; then STATUS="FAIL";
+    elif [ "$AVG_LATENCY" -gt 2000 ]; then STATUS="CRIT";
+    elif [ "$AVG_LATENCY" -gt 500 ]; then STATUS="WARN";
+    fi
+
+    # Save History
+    echo "$(date +"%Y-%m-%d %H:%M"),$target_ip,$threads,$duration,$AVG_LATENCY,$ERR_COUNT,$STATUS,$CURRENT_REPORT_DIR" >> "$HISTORY_FILE"
+
+    echo -e "Status: ${BOLD}$STATUS${NC}"
+    echo -e "Full Report: ${CYAN}$CURRENT_REPORT_DIR/index.html${NC}"
+    echo ""
+    read -p "Press Enter to return..."
+    main_menu
+}
+
+main_menu() {
+    draw_logo
+    echo -e "Select Mode:"
+    echo -e "  ${BOLD}[1]${NC} Start New Stress Test"
+    echo -e "  ${BOLD}[2]${NC} View History Log"
+    echo -e "  ${BOLD}[3]${NC} Exit"
+    echo ""
+    read -p "Choice [1-3]: " menu_choice
+
+    case $menu_choice in
+        1) start_test ;;
+        2) view_history ;;
+        3) echo "Exiting Techton..."; exit 0 ;;
+        *) main_menu ;;
+    esac
+}
+
+main_menu

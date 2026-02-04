@@ -1,0 +1,12 @@
+# Ignore Result Folders
+results/
+!results/.gitkeep
+run_current.jmx
+
+# System Files
+.DS_Store
+Thumbs.db
+
+# Temporary Logs
+*.log
+/tmp/
