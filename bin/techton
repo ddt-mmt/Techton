@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # TECHTON - Enterprise Active Directory Stress Testing Suite
-# Version: 2.2.0 (Hybrid: Docker + Local Host Mode)
+# Version: 1.0 (Hybrid: Docker + Local Host Mode)
 # Property of: Badan Riset dan Inovasi Nasional (BRIN)
 # License: MIT
 # ==============================================================================
@@ -80,7 +80,7 @@ perform_housekeeping() {
 draw_banner() {
     clear
     echo -e "${CLR_CYAN}┌──────────────────────────────────────────────────────────────────────┐"
-    echo -e "│ ${BOLD}${CLR_WHITE}TECHTON ${CLR_CYAN}v2.2.0${NC}${CLR_CYAN}                                                       │"
+    echo -e "│ ${BOLD}${CLR_WHITE}TECHTON ${CLR_CYAN}v1.0${NC}${CLR_CYAN}                                                       │"
     echo -e "│ ${CLR_GREY}Enterprise Grade Active Directory Resilience Audit Tool              ${CLR_CYAN}│"
     echo -e "│ ${CLR_GREY}Property of National Research and Innovation Agency (BRIN)         ${CLR_CYAN}│"
     echo -e "└──────────────────────────────────────────────────────────────────────┘${NC}"

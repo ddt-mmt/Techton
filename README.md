@@ -3,7 +3,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Docker-orange.svg)
-![Version](https://img.shields.io/badge/version-2.2.0-green.svg)
+![Version](https://img.shields.io/badge/version-1.0-green.svg)
 
 **Techton** is a battle-hardened DevOps CLI tool designed to audit the resilience of **Active Directory (AD)** infrastructure. It simulates massive "Boot Storms" and Directory Queries to identify bottlenecks in CPU, RAM, and Network limits before they impact production.
 
