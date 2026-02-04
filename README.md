@@ -1,73 +1,65 @@
 # TECHTON ⚡
-> **Enterprise Active Directory Stress Testing & Load Analysis Tool**
+> **Enterprise Active Directory Stress Testing & Load Analysis Suite**
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Docker-orange.svg)
-![Version](https://img.shields.io/badge/version-1.0.0-green.svg)
+![Version](https://img.shields.io/badge/version-2.2.0-green.svg)
 
-**Techton** is a specialized DevOps tool designed to audit the resilience of **Active Directory (AD)** infrastructure. Unlike generic load testers, Techton is specifically tuned for LDAP authentication workflows, allowing System Administrators to simulate "Boot Storms" (mass login events) safely and accurately.
+**Techton** is a battle-hardened DevOps CLI tool designed to audit the resilience of **Active Directory (AD)** infrastructure. It simulates massive "Boot Storms" and Directory Queries to identify bottlenecks in CPU, RAM, and Network limits before they impact production.
 
-It wraps the power of **Apache JMeter** inside a lightweight **Docker** container, orchestrated by an intelligent **Bash CLI** that acts as both a controller and an analyst.
+Techton encapsulates the power of two industry-leading engines: **Apache JMeter** (Standard) and **K6** (High Performance), orchestrated by an intelligent **Bash TUI**.
 
 ---
 
 ## 🧠 Methodology: The Science Behind Techton
 
-Techton doesn't just "spam" the server. It follows a strict testing methodology to ensure valid results without triggering false-positive security alerts.
+Techton follows a strict engineering approach to Load Testing, ensuring results are valid and actionable.
 
-### 1. Smart Ramp-Up (Anti-DDoS Logic)
-Sending 1,000 login requests in 1 second isn't a load test; it's a DoS attack. Firewalls will block it immediately.
-*   **Techton's Formula:** `RampUp Time = Threads / 5`
-*   **Concept:** It injects users gradually (5 users/sec).
-*   **Benefit:** This mimics real human behavior (employees arriving at the office) and ensures you test the *AD Server's capacity*, not your Firewall's blocking speed.
+### 1. The "Smart Ramp-Up" (Anti-DDoS Logic)
+Sending 20,000 requests in 1 second isn't a test; it's a DoS attack.
+*   **Formula:** `RampUp Time = Threads / 5`
+*   **Mechanism:** Techton injects users gradually (5 users/sec).
+*   **Benefit:** Mimics real-world employee behavior (morning arrival) and prevents Firewall false-positives.
 
-### 2. Time-Based Sustained Load
-Techton focuses on **Duration**, not Loop Count.
-*   It forces a "Steady State" load (e.g., maintaining 500 concurrent users for 5 minutes).
-*   This exposes **Memory Leaks** and **CPU Thermal Throttling** issues that short burst tests miss.
+### 2. Dual-Engine Hybrid Architecture
+*   **Apache JMeter (Docker):** The industry standard. Best for complex, protocol-heavy tests. Runs isolated in Docker for safety.
+*   **K6 (Host/Local):** The modern, high-performance challenger written in Go. Best for raw throughput and massive concurrency with lower resource overhead. **Includes custom LDAP build.**
 
-### 3. The "Doctor" Analysis (Heuristic Diagnostics)
-At the end of a test, Techton analyzes the statistical data to pinpoint the *Root Cause* of performance issues:
-
-| Symptom | Metric Threshold | Probable Root Cause |
-| :--- | :--- | :--- |
-| **Healthy** | Latency < 500ms | System is optimal. |
-| **Warning** | Latency 500ms - 2s | System is nearing capacity. Optimization needed. |
-| **Critical** | Latency > 2s | **CPU Bottleneck.** The server cannot encrypt/hash passwords fast enough. |
-| **Failure** | Error Count > 0 | **Network/Configuration Limit.** Max Connections reached or Firewall dropping packets. |
+### 3. Attack Modes
+*   **Mode 1: Authentication Storm (LDAP Bind)**
+    *   *Stress Target:* **CPU** (Encryption/Hashing).
+    *   *Scenario:* 8:00 AM Login Rush.
+*   **Mode 2: Directory Search (LDAP Query)**
+    *   *Stress Target:* **RAM & Disk I/O** (Database `ntds.dit` caching).
+    *   *Scenario:* Outlook Address Book lookups, HR App Sync.
 
 ---
 
-## ⚙️ How It Works
-
-Techton operates on a "Headless Architecture" to maximize performance.
+## ⚙️ Architecture
 
 ```mermaid
 graph LR
-    A[User CLI] -->|Configures| B(Techton Engine / Bash);
-    B -->|Generates| C{JMX Plan};
-    B -->|Spawns| D[Docker Container];
-    D -->|Runs| E[Apache JMeter];
+    A[User CLI] -->|Selects Engine| B{Engine Choice};
+    B -->|JMeter| C[Docker Container];
+    B -->|K6| D[Host Process / Docker];
+    C -->|Executes| E[Test Plan];
+    D -->|Executes| E;
     E -->|LDAP Protocol| F((Target AD Server));
-    E -->|Live Stats| B;
-    B -->|Saves| G[History CSV];
+    E -->|Live Stats| A;
 ```
-
-1.  **Input:** User provides Target IP, Credentials, and Load (Users).
-2.  **Generation:** Techton generates a dynamic JMeter Test Plan (`.jmx`) with calculated Ramp-up/Duration.
-3.  **Isolation:** A Docker container (`justb4/jmeter`) is spun up to execute the attack. This ensures the tool runs identically on any Linux machine.
-4.  **Live Stream:** JMeter output is piped to `awk` for real-time dashboard rendering.
-5.  **Sanitization:** A "Kill Switch" ensures the `.jmx` file (containing the password) is shredded immediately after execution.
 
 ---
 
 ## 🚀 Installation
 
 ### Prerequisites
-*   **Docker** (Must be installed and running)
-*   **Linux/Mac** (Bash shell)
+*   **Linux Server** (Ubuntu, Debian, CentOS, Kali, etc.)
+*   **Docker** (Required for JMeter mode)
+*   **Hardware:** Recommended 4+ Cores, 8GB+ RAM for simulating >5,000 users.
 
 ### Quick Install
+Clone and run the installer (installs to `/opt/techton`):
+
 ```bash
 git clone https://github.com/ddt-mmt/Techton.git
 cd Techton
@@ -78,27 +70,44 @@ Now you can run the command `techton` from anywhere.
 
 ---
 
-## 📖 Usage Guide
+## 📖 User Guide
 
 Run the tool:
 ```bash
 techton
 ```
 
-### Modes
-1.  **Start New Stress Test:**
-    *   **Target IP:** Your Domain Controller IP.
-    *   **User DN:** Distinguished Name of a standard user (e.g., `CN=test,OU=Users,DC=corp,DC=local`).
-    *   **Threads:** Number of concurrent users to simulate.
-2.  **View History Log:**
-    *   View past test results, status, and paths to full HTML reports.
+### 1. Initialize Attack
+Follow the interactive wizard:
+*   **Select Environment:** Docker (Isolated) or Host (Direct Network).
+*   **Select Engine:** JMeter or K6.
+*   **Target IP:** IP of your Domain Controller.
+*   **User DN:** DN of a standard user (e.g., `CN=test,OU=Users,DC=corp,DC=local`).
+*   **Threads & Duration:** Define your load intensity.
+
+### 2. Live Dashboard
+Monitor the attack in real-time with the Cyberpunk HUD:
+*   **Throughput:** Logins per second.
+*   **Latency:** Average response time.
+*   **Errors:** Connection timeouts or refusals.
+
+### 3. Kill Switch
+Press `Ctrl+C` at any time to execute an **Emergency Stop**. Techton will immediately kill any active containers or processes.
+
+---
+
+## 📂 History & Retention
+
+*   **Auto-Logging:** Every test is saved in `/opt/techton/results/`.
+*   **Retention Policy:** Techton automatically deletes logs older than **30 Days** to save disk space.
+*   **Viewer:** Use menu `[2]` to browse past tests and view their status (PASS/FAIL).
 
 ---
 
 ## ⚠️ Disclaimer
 
 **AUTHORIZED USE ONLY.**
-This tool is a powerful load generator. Using it against servers you do not own or do not have explicit permission to test is a crime under the Computer Fraud and Abuse Act (CFAA) and similar laws globally.
+This tool is a powerful load generator capable of causing Denial of Service. Using it against servers you do not own or do not have explicit permission to test is illegal. The authors are not responsible for damage caused by misuse.
 
 ## 📄 License
 
