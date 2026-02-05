@@ -1,6 +1,7 @@
 #!/bin/bash
 # Monitor Techton Progress - Real Time with Remaining Time
 TEMP_LOG="/tmp/techton_out.txt"
+JS_FILE="/usr/lib/gemini-cli/techton-project/results/run_current.js"
 
 # ANSI Colors
 CLR_CYAN='\033[38;5;51m'
@@ -16,6 +17,19 @@ BOLD='\033[1m'
 clear
 tput civis # Hide cursor
 
+# Helper to convert XmYs to seconds without bc
+to_seconds() {
+    local t=$1
+    local m=0; local s=0
+    if [[ $t =~ ([0-9]+)m([0-9.]+)s ]]; then
+        m=${BASH_REMATCH[1]}
+        s=$(echo ${BASH_REMATCH[2]} | cut -d'.' -f1)
+    elif [[ $t =~ ([0-9.]+)s ]]; then
+        s=$(echo ${BASH_REMATCH[1]} | cut -d'.' -f1)
+    fi
+    echo $(( m * 60 + s ))
+}
+
 while true; do
     if [ ! -f "$TEMP_LOG" ]; then
         echo -e "${CLR_RED}Waiting for log file...${NC}"
@@ -27,63 +41,67 @@ while true; do
     LAST_LINES=$(tail -n 10 "$TEMP_LOG")
     
     # K6 Parsing logic
-    # Line format: login_storm   [  83% ] 1600/1600 VUs  09m44.6s/11m45.0s
+    # Line format A: login_storm   [  83% ] 1600/1600 VUs  09m44.6s/11m45.0s
+    # Line format B: running (0m17.0s), 10/10 VUs, 405 complete ...
     RAW_PROGRESS=$(echo "$LAST_LINES" | grep "[" | grep "%" | tail -n 1)
+    RUNNING_LINE=$(echo "$LAST_LINES" | grep "running (" | tail -n 1)
     
+    PERCENT=0
+    ELAPSED="--"
+    TOTAL="--"
+    REMAINING="--"
+    VUS="--"
+
     if [[ -n "$RAW_PROGRESS" ]]; then
-        # Extract Percentage
-        PERCENT=$(echo "$RAW_PROGRESS" | sed -n 's/.*\[[[:space:]]*\([0-9]\+\)%.*/\1/p')
+        PERCENT=$(echo "$RAW_PROGRESS" | sed -n 's/.*[[[:space:]]*\([0-9]\+\)\%.*/\1/p')
         [[ -z "$PERCENT" ]] && PERCENT=0
         
-        # Extract Time Info (last column usually)
         TIME_FIELD=$(echo "$RAW_PROGRESS" | awk '{print $NF}')
         
-        ELAPSED="--"
-        TOTAL="--"
-        REMAINING="--"
-        
-        if [[ "$TIME_FIELD" == "*/"* ]]; then
+        if [[ "$TIME_FIELD" == *"/"* ]]; then
             ELAPSED=$(echo "$TIME_FIELD" | cut -d'/' -f1)
             TOTAL=$(echo "$TIME_FIELD" | cut -d'/' -f2)
             
-            # Convert to seconds to calculate remaining
-            to_seconds() {
-                local t=$1
-                local m=0
-                local s=0
-                if [[ $t =~ ([0-9]+)m([0-9.]+)s ]]; then
-                    m=${BASH_REMATCH[1]}
-                    s=${BASH_REMATCH[2]}
-                elif [[ $t =~ ([0-9.]+)s ]]; then
-                    s=${BASH_REMATCH[1]}
-                fi
-                echo "$m * 60 + $s" | bc
-            }
-            
             E_SEC=$(to_seconds "$ELAPSED")
             T_SEC=$(to_seconds "$TOTAL")
-            R_SEC=$(echo "$T_SEC - $E_SEC" | bc)
+            R_SEC=$(( T_SEC - E_SEC ))
+            [[ $R_SEC -lt 0 ]] && R_SEC=0
             
-            if (( $(echo "$R_SEC < 0" | bc -l) )); then R_SEC=0; fi
-            
-            # Format R_SEC back to MM:SS
-            R_MIN=$(echo "$R_SEC / 60" | bc)
-            R_SEC_REM=$(echo "$R_SEC % 60" | bc | cut -d'.' -f1)
-            REMAINING=$(printf "%02dm %02ds" "$R_MIN" "$R_SEC_REM")
-        else
-            ELAPSED="$TIME_FIELD"
-            REMAINING="00m 00s (Finishing)"
+            REMAINING=$(printf "%02dm %02ds" $((R_SEC/60)) $((R_SEC%60)))
         fi
-        
         VUS=$(echo "$RAW_PROGRESS" | awk '{for(i=1;i<=NF;i++) if($i ~ /VUs/) print $(i-1)}')
+    elif [[ -n "$RUNNING_LINE" ]]; then
+        # Format: running (1m13.2s), 00/20 VUs, 3788 complete
+        if [[ "$RUNNING_LINE" =~ running\ \(([0-9]+m)?([0-9.]+)s\) ]]; then
+            ELAPSED_RAW="${BASH_REMATCH[1]}${BASH_REMATCH[2]}s"
+            ELAPSED=$ELAPSED_RAW
+            E_SEC=$(to_seconds "$ELAPSED_RAW")
+            
+            # Try to find TOTAL from run_current.js
+            if [[ -f "$JS_FILE" ]]; then
+                # Extract durations from stages: { duration: '62s', target: 10 }
+                T_SEC=$(grep "duration:" "$JS_FILE" | sed -n "s/.*'\(.*\)s'.*/\1/p" | awk '{sum+=$1} END {print sum}')
+                
+                if [[ $T_SEC -gt 0 ]]; then
+                    R_SEC=$(( T_SEC - E_SEC ))
+                    [[ $R_SEC -lt 0 ]] && R_SEC=0
+                    PERCENT=$(( E_SEC * 100 / T_SEC ))
+                    [[ $PERCENT -gt 100 ]] && PERCENT=100
+                    REMAINING=$(printf "%02dm %02ds" $((R_SEC/60)) $((R_SEC%60)))
+                fi
+            fi
+        fi
+        VUS=$(echo "$RUNNING_LINE" | sed -n 's/.*, \([0-9]\+\/[0-9]\+ VUs\).*/\1/p')
+    fi
 
+    if [[ "$ELAPSED" != "--" ]]; then
         # Draw Dashboard
         printf "\033[2J\033[H"
         echo -e "${CLR_CYAN}┌──────────────────────────────────────────────────────────────────────┐"
         echo -e "│ ${BOLD}${CLR_WHITE}TECHTON LIVE MONITOR${NC}${CLR_CYAN}                                               │"
         echo -e "├──────────────────────────────────────────────────────────────────────┤"
         printf "│  %-15s %-48b │\n" "STATUS:" "${CLR_GREEN}RUNNING${NC}"
-        printf "│  %-15s %-48b │\n" "ACTIVE VUs:" "${CLR_YELLOW}${VUS}${NC}"
+        printf "│  %-15s %-48b │\n" "ACTIVE VUs:" "${CLR_YELLOW}${VUS:-'--'}${NC}"
         printf "│  %-15s %-48b │\n" "ELAPSED:" "${CLR_WHITE}${ELAPSED}${NC}"
         printf "│  %-15s %-48b │\n" "SISA DURASI:" "${CLR_RED}${BOLD}${REMAINING}${NC}"
         echo -e "├──────────────────────────────────────────────────────────────────────┤"
@@ -98,20 +116,7 @@ while true; do
         printf "│  PROGRESS: %3d%%  ${CLR_CYAN}[%s%s]${NC}  │\n" "$PERCENT" "$BAR" "$DOTS"
         echo -e "└──────────────────────────────────────────────────────────────────────┘${NC}"
     else
-        # Fallback to general running info
-        RUN_INFO=$(echo "$LAST_LINES" | grep "running (" | tail -n 1)
-        if [[ -n "$RUN_INFO" ]]; then
-            printf "\033[2J\033[H"
-            echo -e "${CLR_CYAN}┌──────────────────────────────────────────────────────────────────────┐"
-            echo -e "│ ${BOLD}${CLR_WHITE}TECHTON LIVE MONITOR${NC}${CLR_CYAN}                                               │"
-            echo -e "├──────────────────────────────────────────────────────────────────────┤"
-            echo -e "│ ${CLR_YELLOW}Initializing Attack Strategy...${NC}                                    │"
-            echo -e "│                                                                      │"
-            printf "│ %-68s │\n" "$(echo $RUN_INFO | cut -c1-68)"
-            echo -e "└──────────────────────────────────────────────────────────────────────┘"
-        else
-            echo -e "${CLR_RED}Waiting for k6 engine to warm up...${NC}"
-        fi
+        echo -e "${CLR_RED}Waiting for k6 engine to warm up...${NC}"
     fi
 
     sleep 1
