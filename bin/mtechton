@@ -1,0 +1,118 @@
+#!/bin/bash
+# Monitor Techton Progress - Real Time with Remaining Time
+TEMP_LOG="/tmp/techton_out.txt"
+
+# ANSI Colors
+CLR_CYAN='\033[38;5;51m'
+CLR_MAGENTA='\033[38;5;201m'
+CLR_GREEN='\033[38;5;82m'
+CLR_YELLOW='\033[38;5;226m'
+CLR_RED='\033[38;5;196m'
+CLR_WHITE='\033[38;5;255m'
+CLR_GREY='\033[38;5;244m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+clear
+tput civis # Hide cursor
+
+while true; do
+    if [ ! -f "$TEMP_LOG" ]; then
+        echo -e "${CLR_RED}Waiting for log file...${NC}"
+        sleep 1
+        continue
+    fi
+
+    # Extract data from last 10 lines
+    LAST_LINES=$(tail -n 10 "$TEMP_LOG")
+    
+    # K6 Parsing logic
+    # Line format: login_storm   [  83% ] 1600/1600 VUs  09m44.6s/11m45.0s
+    RAW_PROGRESS=$(echo "$LAST_LINES" | grep "[" | grep "%" | tail -n 1)
+    
+    if [[ -n "$RAW_PROGRESS" ]]; then
+        # Extract Percentage
+        PERCENT=$(echo "$RAW_PROGRESS" | sed -n 's/.*\[[[:space:]]*\([0-9]\+\)%.*/\1/p')
+        [[ -z "$PERCENT" ]] && PERCENT=0
+        
+        # Extract Time Info (last column usually)
+        TIME_FIELD=$(echo "$RAW_PROGRESS" | awk '{print $NF}')
+        
+        ELAPSED="--"
+        TOTAL="--"
+        REMAINING="--"
+        
+        if [[ "$TIME_FIELD" == "*/"* ]]; then
+            ELAPSED=$(echo "$TIME_FIELD" | cut -d'/' -f1)
+            TOTAL=$(echo "$TIME_FIELD" | cut -d'/' -f2)
+            
+            # Convert to seconds to calculate remaining
+            to_seconds() {
+                local t=$1
+                local m=0
+                local s=0
+                if [[ $t =~ ([0-9]+)m([0-9.]+)s ]]; then
+                    m=${BASH_REMATCH[1]}
+                    s=${BASH_REMATCH[2]}
+                elif [[ $t =~ ([0-9.]+)s ]]; then
+                    s=${BASH_REMATCH[1]}
+                fi
+                echo "$m * 60 + $s" | bc
+            }
+            
+            E_SEC=$(to_seconds "$ELAPSED")
+            T_SEC=$(to_seconds "$TOTAL")
+            R_SEC=$(echo "$T_SEC - $E_SEC" | bc)
+            
+            if (( $(echo "$R_SEC < 0" | bc -l) )); then R_SEC=0; fi
+            
+            # Format R_SEC back to MM:SS
+            R_MIN=$(echo "$R_SEC / 60" | bc)
+            R_SEC_REM=$(echo "$R_SEC % 60" | bc | cut -d'.' -f1)
+            REMAINING=$(printf "%02dm %02ds" "$R_MIN" "$R_SEC_REM")
+        else
+            ELAPSED="$TIME_FIELD"
+            REMAINING="00m 00s (Finishing)"
+        fi
+        
+        VUS=$(echo "$RAW_PROGRESS" | awk '{for(i=1;i<=NF;i++) if($i ~ /VUs/) print $(i-1)}')
+
+        # Draw Dashboard
+        printf "\033[2J\033[H"
+        echo -e "${CLR_CYAN}┌──────────────────────────────────────────────────────────────────────┐"
+        echo -e "│ ${BOLD}${CLR_WHITE}TECHTON LIVE MONITOR${NC}${CLR_CYAN}                                               │"
+        echo -e "├──────────────────────────────────────────────────────────────────────┤"
+        printf "│  %-15s %-48b │\n" "STATUS:" "${CLR_GREEN}RUNNING${NC}"
+        printf "│  %-15s %-48b │\n" "ACTIVE VUs:" "${CLR_YELLOW}${VUS}${NC}"
+        printf "│  %-15s %-48b │\n" "ELAPSED:" "${CLR_WHITE}${ELAPSED}${NC}"
+        printf "│  %-15s %-48b │\n" "SISA DURASI:" "${CLR_RED}${BOLD}${REMAINING}${NC}"
+        echo -e "├──────────────────────────────────────────────────────────────────────┤"
+        
+        # Progress Bar
+        BAR_WIDTH=50
+        FILLED=$(( PERCENT * BAR_WIDTH / 100 ))
+        EMPTY=$(( BAR_WIDTH - FILLED ))
+        BAR=$(printf "%${FILLED}s" | tr ' ' '█')
+        DOTS=$(printf "%${EMPTY}s" | tr ' ' '░')
+        
+        printf "│  PROGRESS: %3d%%  ${CLR_CYAN}[%s%s]${NC}  │\n" "$PERCENT" "$BAR" "$DOTS"
+        echo -e "└──────────────────────────────────────────────────────────────────────┘${NC}"
+    else
+        # Fallback to general running info
+        RUN_INFO=$(echo "$LAST_LINES" | grep "running (" | tail -n 1)
+        if [[ -n "$RUN_INFO" ]]; then
+            printf "\033[2J\033[H"
+            echo -e "${CLR_CYAN}┌──────────────────────────────────────────────────────────────────────┐"
+            echo -e "│ ${BOLD}${CLR_WHITE}TECHTON LIVE MONITOR${NC}${CLR_CYAN}                                               │"
+            echo -e "├──────────────────────────────────────────────────────────────────────┤"
+            echo -e "│ ${CLR_YELLOW}Initializing Attack Strategy...${NC}                                    │"
+            echo -e "│                                                                      │"
+            printf "│ %-68s │\n" "$(echo $RUN_INFO | cut -c1-68)"
+            echo -e "└──────────────────────────────────────────────────────────────────────┘"
+        else
+            echo -e "${CLR_RED}Waiting for k6 engine to warm up...${NC}"
+        fi
+    fi
+
+    sleep 1
+done
