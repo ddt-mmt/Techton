@@ -436,7 +436,7 @@ start_test() {
                 printf "│  %-12s %-18s  %-10s %-20s │\n", "TARGET:", target, "MODE:", mode
                 printf "│  %-12s %-18s  %-10s %-20s │\n", "LOAD:", users " THREADS", "DURATION:", duration "s"
                 print "├──────────────────────────────────────────────────────────────────────┤"
-                print "│    %-18s      %-18s      %-18s  |\n", "ACTIVE VUs", "ELAPSED", "ITERATIONS"
+                printf "│    %-18s      %-18s      %-18s  |\n", "ACTIVE VUs", "ELAPSED", "ITERATIONS"
                 printf "│    " c5 "%-18s" nc "      " c2 "%-18s" nc "      " c3 "%-18s" nc "  |\n", current_vus, int(elapsed) "s", iters
                 print "├──────────────────────────────────────────────────────────────────────┤"
                 printf "│  PROGRESS: %3d%%  " c1 "[%s]" nc "  %4ds / %-4ds |\n", pct, bar, elapsed, duration
