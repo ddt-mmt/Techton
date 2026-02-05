@@ -533,30 +533,40 @@ start_test() {
     fi
 
     # Post-Execution Stats Extraction
+    l=0
+    e=0
     if [[ "$engine_choice" == "1" ]]; then
         # JMeter Stats
         res=$(grep "summary =" "$TEMP_LOG" | tail -n 1)
-        l=$(echo "$res" | awk -F 'Avg: ' '{print $2}' | awk '{print $1}'); l=${l:-0}
-        e=$(echo "$res" | awk -F 'Err: ' '{print $2}' | awk '{print $1}'); e=${e:-0}
+        l=$(echo "$res" | awk -F 'Avg: ' '{print $2}' | awk '{print $1}' | sed 's/[^0-9]//g')
+        e=$(echo "$res" | awk -F 'Err: ' '{print $2}' | awk '{print $1}' | sed 's/[^0-9]//g')
     else
         # K6 Stats Extraction
-        # Latency (http_req_duration or iteration_duration)
-        l=$(grep "iteration_duration" "$TEMP_LOG" | awk '{print $2}' | cut -d':' -f2 | sed 's/avg=//' | sed 's/ms//' | xargs)
-        [[ -z "$l" ]] && l=$(grep "http_req_duration" "$TEMP_LOG" | awk '{print $2}' | cut -d':' -f2 | sed 's/avg=//' | sed 's/ms//' | xargs)
+        # Latency (avg) - Extract numeric part only
+        l=$(grep "iteration_duration" "$TEMP_LOG" | sed -n 's/.*avg=\([0-9.]\+\).*/\1/p' | tail -n 1)
+        [[ -z "$l" ]] && l=$(grep "http_req_duration" "$TEMP_LOG" | sed -n 's/.*avg=\([0-9.]\+\).*/\1/p' | tail -n 1)
         
-        # Errors (checks or http_req_failed)
-        e_rate=$(grep "http_req_failed" "$TEMP_LOG" | awk '{print $2}' | cut -d'%' -f1 | xargs)
-        # If we have iterations, let's just count errors as 1 if rate > 0
-        if (( $(echo "${e_rate:-0} > 0" | bc -l) )); then e=1; else e=0; fi
+        # Errors - Check if any failed iterations or checks
+        failed_iters=$(grep "iterations" "$TEMP_LOG" | grep -o "[0-9]\+ interrupted" | awk '{print $1}')
+        failed_reqs=$(grep "http_req_failed" "$TEMP_LOG" | sed -n 's/.*(\([0-9]\+\)).*/\1/p')
+        
+        e=$(( ${failed_iters:-0} + ${failed_reqs:-0} ))
     fi
 
     # Ensure they are numeric for the comparison
-    l_int=$(echo "${l:-0}" | cut -d'.' -f1)
-    e_int=$(echo "${e:-0}" | cut -d'.' -f1)
+    l_int=$(echo "${l:-0}" | cut -d'.' -f1 | sed 's/[^0-9]//g')
+    e_int=$(echo "${e:-0}" | cut -d'.' -f1 | sed 's/[^0-9]//g')
     l_int=${l_int:-0}
     e_int=${e_int:-0}
 
-    s="PASS"; [ "$e_int" -gt 0 ] && s="FAIL"; [ "$s" == "PASS" ] && [ "$l_int" -gt 2000 ] && s="CRIT"; [ "$s" == "PASS" ] && [ "$l_int" -gt 500 ] && s="WARN";
+    s="PASS"
+    if [[ $e_int -gt 0 ]]; then
+        s="FAIL"
+    elif [[ $l_int -gt 2000 ]]; then
+        s="CRIT"
+    elif [[ $l_int -gt 500 ]]; then
+        s="WARN"
+    fi
     
     # Save Execution Log for Analysis
     cp "$TEMP_LOG" "$C_R_DIR/execution.log"
