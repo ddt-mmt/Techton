@@ -105,30 +105,36 @@ view_history() {
         draw_banner
         echo -e "\n ${BOLD}${CLR_WHITE}HISTORICAL AUDIT LOGS${NC}"
         echo -e " ${CLR_GREY}─────────────────────${NC}"
-        printf " ${BOLD}${CLR_CYAN}%-3s  %-16s  %-15s  %-6s  %-8s  %-8s  %-8s${NC}\n" "ID" "TIMESTAMP" "TARGET" "MODE" "LOAD" "LATENCY" "STATUS"
-        echo -e " ${CLR_GREY}────────────────────────────────────────────────────────────────────────────${NC}"
+        printf " ${BOLD}${CLR_CYAN}%-3s  %-19s  %-15s  %-8s  %-8s  %-8s  %-8s${NC}\n" "ID" "TIMESTAMP" "TARGET" "MODE" "LOAD" "LATENCY" "STATUS"
+        echo -e " ${CLR_GREY}─────────────────────────────────────────────────────────────────────────────────${NC}"
         
         mapfile -t lines < <(tail -n +2 "$HISTORY_FILE")
         if [ ${#lines[@]} -eq 0 ]; then
             echo -e " ${CLR_YELLOW}No records found in database.${NC}"
         else
             i=1
+            declare -A history_map
             for line in "${lines[@]}"; do
                 IFS=',' read -r ts target mode users dur lat err stat path <<< "$line"
                 # Compatibility check
                 if [ -z "$path" ]; then path=$stat; stat=$err; err=$lat; lat=$dur; dur=$users; users=$mode; mode="LOGIN"; fi
                 
-                clean_ts=$(echo "$ts" | sed 's/_/ /g' | cut -c1-16)
-                status_display="$stat"
-                if [ ! -d "$path" ]; then status_display="${CLR_GREY}EXPIRED${NC}"; 
-                else
-                     case "$stat" in
-                        PASS)  status_display="${CLR_GREEN}${stat}${NC}" ;; 
-                        WARN)  status_display="${CLR_YELLOW}${stat}${NC}" ;; 
-                        *)     status_display="${CLR_RED}${stat}${NC}" ;; 
-                    esac
-                fi
-                printf " ${CLR_CYAN}%02d${NC}   %-16s  %-15s  %-6s  %-8s  %-8s  %-8s\n" "$i" "$clean_ts" "$target" "$mode" "$users" "${lat}ms" "$status_display"
+                                # Format Timestamp (YYYY-MM-DD HH:MM:SS)
+                                # Mengubah 2026-02-04_10-42-53 menjadi 2026-02-04 10:42:53
+                                clean_ts=$(echo "$ts" | sed 's/_/ /g' | sed 's/\([0-9]\{2\}\)-\([0-9]\{2\}\)-\([0-9]\{2\}\)/\1:\2:\3/')
+                                
+                                status_display="$stat"
+                                if [ ! -d "$path" ]; then status_display=$(echo -e "${CLR_GREY}EXPIRED${NC}"); 
+                                else
+                                     case "$stat" in
+                                        PASS)  status_display=$(echo -e "${CLR_GREEN}${stat}${NC}") ;;
+                                        WARN)  status_display=$(echo -e "${CLR_YELLOW}${stat}${NC}") ;;
+                                        *)     status_display=$(echo -e "${CLR_RED}${stat}${NC}") ;;
+                                    esac
+                                fi
+                                printf " ${CLR_CYAN}%02d${NC}   %-19s  %-15s  %-8s  %-8s  %-8s  %b\n" "$i" "$clean_ts" "$target" "$mode" "$users" "${lat}ms" "$status_display"                
+                # Save for selection
+                history_map[$i]="$line"
                 ((i++))
             done
         fi
@@ -136,6 +142,35 @@ view_history() {
         printf " ${BOLD}${CLR_CYAN}>> ${NC}"
         read choice
         [[ "$choice" == "b" || "$choice" == "q" ]] && return
+        
+        # Detail View Logic
+        if [[ -n "${history_map[$choice]}" ]]; then
+            IFS=',' read -r ts target mode users dur lat err stat path <<< "${history_map[$choice]}"
+            # Compatibility check again
+            if [ -z "$path" ]; then path=$stat; fi
+            
+            echo -e "\n ${BOLD}${CLR_WHITE}REPORT DETAIL: #$choice${NC}"
+            echo -e " ${CLR_GREY}──────────────────────────────${NC}"
+            echo -e " Timestamp : $ts"
+            echo -e " Target    : $target"
+            echo -e " Mode      : $mode"
+            echo -e " Status    : $stat"
+            echo -e " Path      : $path"
+            
+            if [ -d "$path" ]; then
+                echo -e "\n ${BOLD}Available Artifacts:${NC}"
+                ls -1 "$path" | sed 's/^/  - /'
+                
+                if [ -f "$path/result.jtl" ]; then
+                    echo -e "\n ${BOLD}Head of Result Log (Last 5 lines):${NC}"
+                    tail -n 5 "$path/result.jtl"
+                fi
+                echo -e "\n ${CLR_GREEN}Tip: Use SCP to download the 'dashboard' folder for full HTML graphs.${NC}"
+            else
+                 echo -e "\n ${CLR_RED}[!] Logs for this run have been deleted/expired.${NC}"
+            fi
+            read -p " Press Enter..."
+        fi
     done
 }
 
@@ -230,19 +265,60 @@ start_test() {
         fi
     fi
     
-    # Inputs
+    # Inputs with clearer examples
     echo -e "\n ${BOLD}${CLR_WHITE}TARGET CONFIGURATION ($MODE_NAME)${NC}"
-    printf " ${CLR_WHITE}Target IP     ${NC}[${CLR_GREY}192.168.100.236${NC}]: " ; read t_ip ; t_ip=${t_ip:-192.168.100.236}
-    printf " ${CLR_WHITE}Admin Account ${NC}[${CLR_GREY}tester${NC}] (User only): " ; read u_name ; u_name=${u_name:-tester}
-    def_dn="CN=$u_name,OU=User,OU=BRIN,DC=net,DC=brin,DC=go,DC=id"
-    printf " ${CLR_WHITE}Use DN?       ${NC}[${CLR_GREY}y/n${NC}]: " ; read c_dn ; c_dn=${c_dn:-y}
-    if [[ "$c_dn" == "y" ]]; then u_dn=$def_dn; else printf " ${CLR_WHITE}Manual DN     ${NC}: "; read u_dn; fi
-    printf " ${CLR_WHITE}Access Key    ${NC}(Hidden): " ; read -s pass ; echo ""
-    printf " ${CLR_WHITE}Load Intensity${NC}[${CLR_GREY}10 Threads${NC}]: " ; read threads ; threads=${threads:-10}
     
+    # Target IP
+    printf " ${CLR_WHITE}Target IP${NC} [Ex: 192.168.1.10 or ad.corp.local]\n"
+    printf " ${CLR_GREY}Default [192.168.100.236]: ${NC}"
+    read t_ip
+    t_ip=${t_ip:-192.168.100.236}
+    
+    # Admin Account
+    printf "\n ${CLR_WHITE}Target User Account${NC} (Standard User is safer)
+"
+    printf " ${CLR_GREY}Default [tester]: ${NC}"
+    read u_name
+    u_name=${u_name:-tester}
+    
+    # DN Configuration
+    printf "\n ${CLR_WHITE}Distinguished Name (DN) Configuration${NC}
+"
+    printf " ${CLR_CYAN}[1]${NC} Auto-Generate: CN=$u_name,OU=User,OU=BRIN,DC=net,DC=brin,DC=go,DC=id\n"
+    printf " ${CLR_CYAN}[2]${NC} Manual Input
+"
+    printf " ${CLR_GREY}Select [1]: ${NC}"
+    read dn_choice
+    dn_choice=${dn_choice:-1}
+    
+    if [[ "$dn_choice" == "1" ]]; then
+        u_dn="CN=$u_name,OU=User,OU=BRIN,DC=net,DC=brin,DC=go,DC=id"
+    else
+        printf " ${CLR_WHITE}Enter Full DN:${NC} "
+        read u_dn
+    fi
+    echo -e " ${CLR_GREEN}Using DN:${NC} $u_dn"
+    
+    # Password
+    printf "\n ${CLR_WHITE}Password${NC} (Input Hidden): "
+    read -s pass
+    echo ""
+    
+    # Load Intensity
+    printf "\n ${CLR_WHITE}Concurrent Users (Threads)${NC}
+"
+    printf " ${CLR_GREY}Default [10]: ${NC}"
+    read threads
+    threads=${threads:-10}
+    
+    # Duration
     rampup=$((threads / 5)); [ $rampup -lt 1 ] && rampup=1
-    duration=$((rampup + 60)); [ $duration -lt 30 ] && duration=30
-    printf " ${CLR_WHITE}Duration (s)  ${NC}[${CLR_GREY}$duration${NC}]: " ; read dur_in ; duration=${dur_in:-$duration}
+    rec_dur=$((rampup + 60))
+    printf "\n ${CLR_WHITE}Attack Duration (Seconds)${NC}
+"
+    printf " ${CLR_GREY}Recommended Min [$rec_dur]: ${NC}"
+    read dur_in
+    duration=${dur_in:-$rec_dur}
     
     echo -e "\n ${CLR_CYAN}SYSTEM READY. ENGAGE?${NC}"
     read -p " Press Enter..."
