@@ -11,9 +11,6 @@ const single_password = '__PASSWORD__';
 // Load CSV if enabled
 const user_data = new SharedArray('users', function () {
   if (use_csv) {
-    // Expecting CSV format: username,password,dn
-    // But for simplicity, we can just assume: username (and generate DN) OR full DN.
-    // Let's assume the CSV contains: DN,Password
     return open('./users.csv').split('\n').slice(1); // Skip header
   }
   return [];
@@ -21,17 +18,9 @@ const user_data = new SharedArray('users', function () {
 
 export const options = {
   scenarios: {
-    login_storm: {
-      executor: 'ramping-vus',
-      startVUs: 0,
-      stages: [
-        { duration: '__RAMPUP__s', target: __THREADS__ }, 
-        { duration: '__DURATION__s', target: __THREADS__ }, 
-        { duration: '5s', target: 0 },         
-      ],
-      gracefulStop: '5s',
-    },
+    __SCENARIO_NAME__: __SCENARIO_BODY__
   },
+  thresholds: __THRESHOLDS_BODY__
 };
 
 export default function () {

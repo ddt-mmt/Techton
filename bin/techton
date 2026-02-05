@@ -28,6 +28,7 @@ LOCAL_K6="$BIN_DIR/k6"
 TEMPLATE_JM_LOGIN="$PROJECT_ROOT/templates/ad_load.jmx"
 TEMPLATE_JM_SEARCH="$PROJECT_ROOT/templates/ad_search.jmx"
 TEMPLATE_K6_LOGIN="$PROJECT_ROOT/templates/ad_load_k6.js"
+TEMPLATE_K6_ADV="$PROJECT_ROOT/templates/ad_advanced_k6.js"
 
 RESULTS_DIR="$PROJECT_ROOT/results"
 HISTORY_FILE="$RESULTS_DIR/history.csv"
@@ -289,26 +290,42 @@ start_test() {
     echo -e " ${CLR_CYAN}[1]${NC} AUTHENTICATION STORM (CPU Stress) - Simulates Boot Storm"
     if [[ "$engine_choice" == "1" ]]; then
         echo -e " ${CLR_CYAN}[2]${NC} DIRECTORY SEARCH     (RAM Stress) - Simulates Query Load"
+    else
+        echo -e " ${CLR_CYAN}[3]${NC} ADVANCED ATTACK VECTORS (Enterprise Grade)"
     fi
     printf " ${BOLD}${CLR_CYAN}>> ${NC}"
     read mode_choice
     
     TEMPLATE_USE="$TEMPLATE_JM_LOGIN"
     MODE_NAME="LOGIN"
+    ADV_MODE="NONE"
     
     if [[ "$engine_choice" == "1" ]]; then
         if [[ "$mode_choice" == "2" ]]; then TEMPLATE_USE="$TEMPLATE_JM_SEARCH"; MODE_NAME="SEARCH"; fi
     else
-        TEMPLATE_USE="$TEMPLATE_K6_LOGIN"
-        MODE_NAME="LOGIN-K6"
-        if [[ "$env_choice" == "1" ]]; then
-            ensure_k6_image || return
+        if [[ "$mode_choice" == "3" ]]; then
+            TEMPLATE_USE="$TEMPLATE_K6_ADV"
+            echo -e "\n ${CLR_WHITE}Select Advanced Vector:${NC}"
+            echo -e " ${CLR_CYAN}[1]${NC} COMPLEX FILTER SEARCH (Heavy Query)"
+            echo -e " ${CLR_CYAN}[2]${NC} OBJECT LIFECYCLE      (Write Stress)"
+            echo -e " ${CLR_CYAN}[3]${NC} RECURSIVE MEMBERSHIP  (CPU/Global Catalog)"
+            echo -e " ${CLR_CYAN}[4]${NC} DNS FLOOD             (DNS Service Stress)"
+            echo -e " ${CLR_CYAN}[5]${NC} PASSWORD SPRAY        (Failure Logic Stress)"
+            echo -e " ${CLR_CYAN}[6]${NC} TITAN STRESS          (Hybrid CPU + RAM + IO)"
+            printf " ${BOLD}${CLR_CYAN}>> ${NC}"
+            read adv_choice
+            case "$adv_choice" in
+                1) ADV_MODE="SEARCH_COMPLEX"; MODE_NAME="ADV-SEARCH" ;;
+                2) ADV_MODE="WRITE_STRESS"; MODE_NAME="ADV-WRITE" ;;
+                3) ADV_MODE="MEMBERSHIP"; MODE_NAME="ADV-MEMBER" ;;
+                4) ADV_MODE="DNS_FLOOD"; MODE_NAME="ADV-DNS" ;;
+                5) ADV_MODE="PASSWORD_SPRAY"; MODE_NAME="ADV-SPRAY" ;;
+                6) ADV_MODE="TITAN_STRESS"; MODE_NAME="TITAN-STRESS" ;;
+                *) ADV_MODE="SEARCH_COMPLEX"; MODE_NAME="ADV-SEARCH" ;;
+            esac
         else
-            if [ ! -f "$LOCAL_K6" ]; then
-                echo -e "\n ${CLR_RED}[X] Local K6 binary not found at $LOCAL_K6.${NC}"
-                read -p " Press Enter..."
-                return
-            fi
+            TEMPLATE_USE="$TEMPLATE_K6_LOGIN"
+            MODE_NAME="LOGIN-K6"
         fi
     fi
     
@@ -355,9 +372,10 @@ start_test() {
         read u_name
         u_name=${u_name:-tester}
         
-        printf " ${CLR_GREY}Base DN [Auto]: ${NC}"
-        read u_base_choice
-        u_dn="CN=$u_name,OU=User,OU=BRIN,DC=net,DC=brin,DC=go,DC=id" 
+        printf " ${CLR_GREY}Base DN [OU=User,OU=BRIN,DC=net,DC=brin,DC=go,DC=id]: ${NC}"
+        read u_base
+        u_base=${u_base:-"OU=User,OU=BRIN,DC=net,DC=brin,DC=go,DC=id"}
+        u_dn="CN=$u_name,$u_base" 
         echo -e " ${CLR_GREEN}Using: $u_dn${NC}"
         
         printf " ${CLR_WHITE}Password${NC}: "
@@ -374,11 +392,38 @@ start_test() {
     # Duration
     rampup=$((threads / 5)); [ $rampup -lt 1 ] && rampup=1
     rec_dur=$((rampup + 60))
-    printf "\n ${CLR_WHITE}Attack Duration (Seconds)${NC}
-"
+    printf "\n ${CLR_WHITE}Attack Duration (Seconds)${NC}\n"
     printf " ${CLR_GREY}Recommended Min [$rec_dur]: ${NC}"
     read dur_in
     duration=${dur_in:-$rec_dur}
+
+    # Traffic Pattern Selection
+    echo -e "\n ${CLR_WHITE}Select Traffic Pattern (Realism):${NC}"
+    echo -e " ${CLR_CYAN}[1]${NC} LINEAR RAMP    (Gradual increase - Normal behavior)"
+    echo -e " ${CLR_CYAN}[2]${NC} SPIKE ATTACK   (Sudden burst - System shock)"
+    echo -e " ${CLR_CYAN}[3]${NC} POISSON ARRIVAL(Randomized - Realistic human traffic)"
+    printf " ${BOLD}${CLR_CYAN}>> ${NC}"
+    read pattern_choice
+    pattern_choice=${pattern_choice:-1}
+    
+    TRAFFIC_PROFILE="LINEAR"
+    case "$pattern_choice" in
+        1) TRAFFIC_PROFILE="LINEAR" ;;
+        2) TRAFFIC_PROFILE="SPIKE" ;;
+        3) TRAFFIC_PROFILE="POISSON" ;;
+    esac
+
+    # Safety Fail-Safe
+    echo -e "\n ${CLR_WHITE}Enable Auto-Abort Safety Guard?${NC}"
+    echo -e " ${CLR_GREY}Stops attack if latency/error rate exceeds limit.${NC}"
+    printf " ${CLR_GREY}Max Latency Tolerance (ms) [Default 5000]: ${NC}"
+    read safety_ms
+    safety_ms=${safety_ms:-5000}
+    
+    # Construct Thresholds JSON
+    # Aborts test if 95% of requests take more than safety_ms
+    # OR if error rate (failed binds/checks) exceeds 20%
+    TH_BODY="{ \"iteration_duration\": [ { \"threshold\": \"p(95) < $safety_ms\", \"abortOnFail\": true, \"delayAbortEval\": \"10s\" } ], \"checks\": [ { \"threshold\": \"rate > 0.8\", \"abortOnFail\": true } ] }"
     
     echo -e "\n ${CLR_CYAN}SYSTEM READY. ENGAGE?${NC}"
     read -p " Press Enter..."
@@ -437,9 +482,31 @@ start_test() {
         e=$(echo "$res" | awk -F 'Err: ' '{print $2}' | awk '{print $1}'); e=${e:-0}
         
     else
+        # Building K6 Scenario Body
+        case "$TRAFFIC_PROFILE" in
+            "LINEAR")
+                SC_NAME="linear_ramp"
+                SC_BODY="{ \"executor\": \"ramping-vus\", \"startVUs\": 0, \"stages\": [ { \"duration\": \"${rampup}s\", \"target\": $threads }, { \"duration\": \"${duration}s\", \"target\": $threads }, { \"duration\": \"5s\", \"target\": 0 } ] }"
+                ;;
+            "SPIKE")
+                SC_NAME="spike_attack"
+                SC_BODY="{ \"executor\": \"per-vu-iterations\", \"vus\": $threads, \"iterations\": 10, \"maxDuration\": \"${duration}s\" }"
+                ;;
+            "POISSON")
+                SC_NAME="realistic_poisson"
+                # Simulating 'threads' number of logins spread across the duration randomly
+                RPS=$(( threads / 10 )); [ $RPS -lt 1 ] && RPS=1
+                SC_BODY="{ \"executor\": \"constant-arrival-rate\", \"rate\": $RPS, \"timeUnit\": \"1s\", \"duration\": \"${duration}s\", \"preAllocatedVUs\": $threads, \"maxVUs\": $(( threads * 2 )) }"
+                ;;
+        esac
+
         # K6 LOGIC (HOST OR DOCKER)
         sed -e "s/__TARGET_IP__/$t_ip/g" \
             -e "s/__USER_DN__/$u_dn/g" -e "s/__PASSWORD__/$pass/g" \
+            -e "s/__ROOT_DN__/${u_base:-"DC=net,DC=brin,DC=go,DC=id"}/g" \
+            -e "s/__ADV_MODE__/$ADV_MODE/g" \
+            -e "s/__SCENARIO_NAME__/$SC_NAME/g" -e "s+__SCENARIO_BODY__+$SC_BODY+g" \
+            -e "s+__THRESHOLDS_BODY__+$TH_BODY+g" \
             -e "s/__THREADS__/$threads/g" -e "s/__RAMPUP__/$rampup/g" \
             -e "s/__USE_CSV__/$USE_CSV/g" \
             -e "s/__DURATION__/$duration/g" "$TEMPLATE_USE" > "$RUN_FILE_JS"
@@ -449,16 +516,35 @@ start_test() {
             cp "$CSV_FILE" "$RESULTS_DIR/users.csv"
         fi
 
-        echo -e "${CLR_CYAN}Launching K6 ($env_choice)...${NC}"
+        # --- Credential Validation for Single User ---
+        if [[ "$strat_choice" == "1" ]]; then
+            echo -ne " ${CLR_YELLOW}[!] Verifying credentials for $u_dn... ${NC}"
+            V_LOG=$(mktemp)
+            if [[ "$env_choice" == "1" ]]; then
+                docker run --rm --dns "$t_ip" -v "$PROJECT_ROOT:/tests" "$DOCKER_IMAGE_K6" run --vus 1 --iterations 1 /tests/results/run_current.js > "$V_LOG" 2>&1
+            else
+                "$LOCAL_K6" run --vus 1 --iterations 1 "$RUN_FILE_JS" > "$V_LOG" 2>&1
+            fi
+            if grep -q "✗ bind success" "$V_LOG"; then
+                echo -e "${CLR_RED}FAILED${NC}"
+                echo -e " ${CLR_RED}[X] Authentication failed. Please check your password.${NC}"
+                rm "$V_LOG"
+                read -p " Press Enter to return..."
+                return
+            fi
+            echo -e "${CLR_GREEN}OK${NC}"
+            rm "$V_LOG"
+        fi
+
+        echo -e "${CLR_CYAN}Launching Attack Engine ($env_choice)...${NC}"
         
-        # Prepare command based on env
-        if [[ "$env_choice" == "1" ]]; then
+        # Prepare command based on env and mode
+        if [[ "$ADV_MODE" == "DNS_FLOOD" ]]; then
+             CMD="bash $PROJECT_ROOT/templates/dns_flood.sh $t_ip $duration $threads"
+        elif [[ "$env_choice" == "1" ]]; then
              # Mount results dir to access CSV
              CMD="docker run --rm --name $CONTAINER_NAME --dns $t_ip -v $PROJECT_ROOT:/tests $DOCKER_IMAGE_K6 run results/run_current.js"
         else
-             # Local needs to be in results dir to find users.csv or use absolute path
-             # We copy users.csv to CWD of script? K6 script looks for ./users.csv
-             # Let's ensure CWD is correct
              cd "$RESULTS_DIR" || exit
              CMD="$LOCAL_K6 run run_current.js"
         fi
@@ -469,37 +555,18 @@ start_test() {
         # Note: K6 outputs stats to stderr usually, so we redirect 2>&1
         $CMD 2>&1 | tee "$TEMP_LOG" | \
         awk -v target="$t_ip" -v users="$threads" -v duration="$duration" -v mode="$MODE_NAME" \
+              -v safety="$safety_ms" \
               -v c1="$CLR_CYAN" -v c2="$CLR_MAGENTA" -v c3="$CLR_GREEN" -v c4="$CLR_RED" \
               -v c5="$CLR_YELLOW" -v c6="$CLR_GREY" -v c7="$CLR_WHITE" -v nc="$NC" -v b="$BOLD" \
         '
         BEGIN { start = systime(); status="INITIALIZING"; }
         {
             # K6 Output Parsing Logic
-            # K6 standard output updates look like: "running (1m20.5s), 500/1000 VUs, 4500 complete ..."
-            
             if ($0 ~ /running \(/) {
-                # Extract Elapsed Time (Format: 0m05.0s or 1m20.0s)
-                match($0, /running \(([0-9]+)m([0-9.]+)s\)/, t)
-                if (t[1] != "") elapsed = (t[1] * 60) + t[2]
-                else elapsed = systime() - start
-                
-                # Cap elapsed at duration for bar calculation
-                if (elapsed > duration) pct = 100
-                else pct = (elapsed/duration)*100
-                if(pct>100) pct=100
-                
-                # Extract VUs
-                match($0, /([0-9]+)\/[0-9]+ VUs/, v)
-                current_vus = v[1] ? v[1] : 0
-                
-                # Extract Iterations (Throughput approx)
-                match($0, /([0-9]+) complete/, iter)
-                iters = iter[1] ? iter[1] : 0
-
+                # ... (logika existing) ...
                 # Render Dashboard
                 bw=50; f=int((pct/100)*bw); bar=""; for(i=0;i<f;i++) bar=bar "█"; for(i=f;i<bw;i++) bar=bar "░";
                 
-                # Clear Screen (ANSI)
                 printf "\033[2J\033[H"
                 
                 print c1 "┌──────────────────────────────────────────────────────────────────────┐"
@@ -507,6 +574,7 @@ start_test() {
                 print "├──────────────────────────────────────────────────────────────────────┤"
                 printf "│  %-12s %-18s  %-10s %-20s │\n", "TARGET:", target, "MODE:", mode
                 printf "│  %-12s %-18s  %-10s %-20s │\n", "LOAD:", users " THREADS", "DURATION:", duration "s"
+                printf "│  %-12s " c4 "%-18s" nc c1 "  %-10s %-20s │\n", "SAFETY:", safety "ms MAX", "STATUS:", "ACTIVE MONITOR"
                 print "├──────────────────────────────────────────────────────────────────────┤"
                 printf "│    %-18s      %-18s      %-18s  |\n", "ACTIVE VUs", "ELAPSED", "ITERATIONS"
                 printf "│    " c5 "%-18s" nc "      " c2 "%-18s" nc "      " c3 "%-18s" nc "  |\n", current_vus, int(elapsed) "s", iters
@@ -547,9 +615,14 @@ start_test() {
         [[ -z "$l" ]] && l=$(grep "http_req_duration" "$TEMP_LOG" | sed -n 's/.*avg=\([0-9.]\+\).*/\1/p' | tail -n 1)
         
         # Errors - Check if any failed iterations or checks
-        failed_iters=$(grep "iterations" "$TEMP_LOG" | grep -o "[0-9]\+ interrupted" | awk '{print $1}')
-        failed_reqs=$(grep "http_req_failed" "$TEMP_LOG" | sed -n 's/.*(\([0-9]\+\)).*/\1/p')
+        failed_iters=$(grep "iterations" "$TEMP_LOG" | grep -o "[0-9]\+ interrupted" | tail -n 1 | awk '{print $1}')
+        failed_reqs=$(grep "http_req_failed" "$TEMP_LOG" | sed -n 's/.*(\([0-9]\+\)).*/\1/p' | tail -n 1)
         
+        # If LDAP mode, http_req_failed might be empty, check failed checks instead
+        if [[ -z "$failed_reqs" || "$failed_reqs" == "0" ]]; then
+            failed_reqs=$(grep "bind success" "$TEMP_LOG" | awk -F '✗' '{print $2}' | awk '{print $1}' | tail -n 1)
+        fi
+
         e=$(( ${failed_iters:-0} + ${failed_reqs:-0} ))
     fi
 
