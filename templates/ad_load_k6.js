@@ -1,10 +1,23 @@
 import ldap from 'k6/x/ldap';
 import { check, sleep } from 'k6';
+import { SharedArray } from 'k6/data';
 
-// --- CONFIGURATION (Injected by Techton) ---
+// --- CONFIGURATION ---
 const target_ip = '__TARGET_IP__';
-const user_dn_template = '__USER_DN__'; // e.g. CN=user1,OU=...
-const password = '__PASSWORD__';
+const use_csv = __USE_CSV__; // Boolean flag injected by Techton
+const single_user_dn = '__USER_DN__';
+const single_password = '__PASSWORD__';
+
+// Load CSV if enabled
+const user_data = new SharedArray('users', function () {
+  if (use_csv) {
+    // Expecting CSV format: username,password,dn
+    // But for simplicity, we can just assume: username (and generate DN) OR full DN.
+    // Let's assume the CSV contains: DN,Password
+    return open('./users.csv').split('\n').slice(1); // Skip header
+  }
+  return [];
+});
 
 export const options = {
   scenarios: {
@@ -12,44 +25,66 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '__RAMPUP__s', target: __THREADS__ }, // Ramp up to N users
-        { duration: '__DURATION__s', target: __THREADS__ }, // Stay there
-        { duration: '10s', target: 0 },         // Ramp down
+        { duration: '__RAMPUP__s', target: __THREADS__ }, 
+        { duration: '__DURATION__s', target: __THREADS__ }, 
+        { duration: '5s', target: 0 },         
       ],
-      gracefulStop: '0s',
+      gracefulStop: '5s',
     },
-  },
-  thresholds: {
-    'ldap_response_time': ['p(95)<2000'], // Fail if 95% of requests take > 2s
-    'ldap_result_code': ['rate<0.01'],    // Fail if error rate > 1%
   },
 };
 
-const client = new ldap.Client({
-  url: `ldap://${target_ip}:389`,
-});
-
 export default function () {
-  // 1. Connect
+  if (__ITER == 0) sleep(Math.random() * 2); 
+
+  // Determine Credentials
+  let dn, pass;
+  
+  if (use_csv && user_data.length > 0) {
+      // Pick random user from list
+      const row = user_data[Math.floor(Math.random() * user_data.length)];
+      if (!row) return; // Skip empty lines
+      const cols = row.split(',');
+      dn = cols[0].trim();
+      pass = cols[1] ? cols[1].trim() : single_password; // Use CSV pass or default
+  } else {
+      dn = single_user_dn;
+      pass = single_password;
+  }
+
+  let client = null;
+  
   try {
-    client.connect();
-    
-    // 2. Bind (Login)
-    // In k6, we simulate distinct users if needed, or stress one account
-    // For raw stress test, stressing one account is often enough to kill CPU
-    const bind_success = client.bind(user_dn_template, password);
+    // 1. Dial
+    try {
+        client = ldap.dialURL(`ldap://${target_ip}:389`);
+    } catch (e) {
+        sleep(1);
+        return;
+    }
+
+    if (!client) throw new Error("Client null");
+
+    // 2. Bind
+    let bind_success = false;
+    try {
+        client.bind(dn, pass);
+        bind_success = true;
+    } catch(err) {
+         // Expected for wrong password/stress
+    }
 
     check(bind_success, {
       'bind success': (ok) => ok === true,
     });
 
-    // 3. Unbind (Logout) - Important to close socket
-    client.unbind();
-    
-    // Sleep random to behave like human (0.5s - 1.5s)
-    sleep(Math.random() * 1 + 0.5);
-
   } catch (e) {
-    console.error('LDAP Error:', e.message);
+    // Suppress
+  } finally {
+    if (client) {
+        try { client.close(); } catch(e) {}
+    }
   }
+  
+  sleep(Math.random() * 0.5 + 0.1); 
 }

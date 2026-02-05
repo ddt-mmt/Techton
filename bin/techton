@@ -321,39 +321,52 @@ start_test() {
     read t_ip
     t_ip=${t_ip:-192.168.100.236}
     
-    # Admin Account
-    printf "\n ${CLR_WHITE}Target User Account${NC} (Standard User is safer)
-"
-    printf " ${CLR_GREY}Default [tester]: ${NC}"
-    read u_name
-    u_name=${u_name:-tester}
-    
     # DN Configuration
-    printf "\n ${CLR_WHITE}Distinguished Name (DN) Configuration${NC}
-"
-    printf " ${CLR_CYAN}[1]${NC} Auto-Generate: CN=$u_name,OU=User,OU=BRIN,DC=net,DC=brin,DC=go,DC=id\n"
-    printf " ${CLR_CYAN}[2]${NC} Manual Input
-"
+    printf "\n ${CLR_WHITE}User Attack Strategy${NC}\n"
+    printf " ${CLR_CYAN}[1]${NC} Single User (High CPU Stress, Low RAM)\n"
+    printf " ${CLR_CYAN}[2]${NC} Multi-User List (Balanced Stress, Higher Realism)\n"
     printf " ${CLR_GREY}Select [1]: ${NC}"
-    read dn_choice
-    dn_choice=${dn_choice:-1}
+    read strat_choice
+    strat_choice=${strat_choice:-1}
     
-    if [[ "$dn_choice" == "1" ]]; then
-        u_dn="CN=$u_name,OU=User,OU=BRIN,DC=net,DC=brin,DC=go,DC=id"
+    USE_CSV="false"
+    if [[ "$strat_choice" == "2" ]]; then
+        USE_CSV="true"
+        printf "\n ${CLR_WHITE}Generating Dummy User List...${NC}\n"
+        printf " ${CLR_GREY}Prefix [user]: ${NC}"; read u_prefix; u_prefix=${u_prefix:-user}
+        printf " ${CLR_GREY}Count  [1000]: ${NC}"; read u_count; u_count=${u_count:-1000}
+        printf " ${CLR_GREY}Base DN (e.g. OU=Users,DC=corp...): ${NC}"; read u_base; u_base=${u_base:-"OU=User,OU=BRIN,DC=net,DC=brin,DC=go,DC=id"}
+        printf " ${CLR_GREY}Password for all [P@ssw0rd123]: ${NC}"; read u_pass; u_pass=${u_pass:-"P@ssw0rd123"}
+        
+        # Generate CSV
+        CSV_FILE="$PROJECT_ROOT/results/users.csv"
+        echo "DN,Password" > "$CSV_FILE"
+        echo -ne " ${CLR_YELLOW}Building CSV...${NC}"
+        for ((i=1; i<=u_count; i++)); do
+            printf "CN=%s%03d,%s\n" "$u_prefix" "$i" "$u_base" "$u_pass" >> "$CSV_FILE"
+        done
+        echo -e " ${CLR_GREEN}Done! ($u_count users)${NC}"
+        pass="$u_pass" # Sync for template
+        u_dn="MULTI-USER-MODE"
     else
-        printf " ${CLR_WHITE}Enter Full DN:${NC} "
-        read u_dn
+        # Single User Logic (Existing)
+        printf "\n ${CLR_WHITE}Target User Account${NC}\n"
+        printf " ${CLR_GREY}Default [tester]: ${NC}"
+        read u_name
+        u_name=${u_name:-tester}
+        
+        printf " ${CLR_GREY}Base DN [Auto]: ${NC}"
+        read u_base_choice
+        u_dn="CN=$u_name,OU=User,OU=BRIN,DC=net,DC=brin,DC=go,DC=id" 
+        echo -e " ${CLR_GREEN}Using: $u_dn${NC}"
+        
+        printf " ${CLR_WHITE}Password${NC}: "
+        read -s pass
+        echo ""
     fi
-    echo -e " ${CLR_GREEN}Using DN:${NC} $u_dn"
-    
-    # Password
-    printf "\n ${CLR_WHITE}Password${NC} (Input Hidden): "
-    read -s pass
-    echo ""
     
     # Load Intensity
-    printf "\n ${CLR_WHITE}Concurrent Users (Threads)${NC}
-"
+    printf "\n ${CLR_WHITE}Concurrent Users (Threads)${NC}\n"
     printf " ${CLR_GREY}Default [10]: ${NC}"
     read threads
     threads=${threads:-10}
@@ -428,15 +441,26 @@ start_test() {
         sed -e "s/__TARGET_IP__/$t_ip/g" \
             -e "s/__USER_DN__/$u_dn/g" -e "s/__PASSWORD__/$pass/g" \
             -e "s/__THREADS__/$threads/g" -e "s/__RAMPUP__/$rampup/g" \
+            -e "s/__USE_CSV__/$USE_CSV/g" \
             -e "s/__DURATION__/$duration/g" "$TEMPLATE_USE" > "$RUN_FILE_JS"
+            
+        # Copy generated CSV if needed
+        if [[ "$USE_CSV" == "true" ]]; then
+            cp "$CSV_FILE" "$RESULTS_DIR/users.csv"
+        fi
 
         echo -e "${CLR_CYAN}Launching K6 ($env_choice)...${NC}"
         
         # Prepare command based on env
         if [[ "$env_choice" == "1" ]]; then
+             # Mount results dir to access CSV
              CMD="docker run --rm --name $CONTAINER_NAME --dns $t_ip -v $PROJECT_ROOT:/tests $DOCKER_IMAGE_K6 run results/run_current.js"
         else
-             CMD="$LOCAL_K6 run $RUN_FILE_JS"
+             # Local needs to be in results dir to find users.csv or use absolute path
+             # We copy users.csv to CWD of script? K6 script looks for ./users.csv
+             # Let's ensure CWD is correct
+             cd "$RESULTS_DIR" || exit
+             CMD="$LOCAL_K6 run run_current.js"
         fi
 
         # Execute with Real-time Parsing for Dashboard using unbuffer/script trick or direct pipe
