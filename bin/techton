@@ -157,14 +157,62 @@ view_history() {
             echo -e " Path      : $path"
             
             if [ -d "$path" ]; then
-                echo -e "\n ${BOLD}Available Artifacts:${NC}"
-                ls -1 "$path" | sed 's/^/  - /'
+                echo -e "\n ${BOLD}${CLR_WHITE}📊 DATA ANALYSIS${NC}"
+                echo -e " ${CLR_GREY}────────────────${NC}"
                 
+                # JMETER ANALYSIS (CSV)
                 if [ -f "$path/result.jtl" ]; then
-                    echo -e "\n ${BOLD}Head of Result Log (Last 5 lines):${NC}"
-                    tail -n 5 "$path/result.jtl"
+                    echo -e " Engine: ${CLR_CYAN}Apache JMeter${NC}"
+                    awk -F',' '
+                        BEGIN { count=0; sum=0; max=0; err=0; }
+                        NR>1 {
+                            count++;
+                            t=$2; # Elapsed/Latency
+                            sum+=t;
+                            if(t>max) max=t;
+                            if($8 == "false") err++;
+                        }
+                        END {
+                            if(count>0) {
+                                avg = sum/count;
+                                err_rate = (err/count)*100;
+                                printf " Total Requests  : %d\n", count
+                                printf " Avg Latency     : %.2f ms\n", avg
+                                printf " Max Latency     : %.2f ms\n", max
+                                printf " Error Rate      : %.2f%%\n", err_rate
+                                
+                                if (avg > 2000) print " \033[31m[!] CRITICAL: High Latency (>2s)\033[0m"
+                                else if (avg > 500) print " \033[33m[!] WARNING: Moderate Latency (>500ms)\033[0m"
+                                else print " \033[32m[OK] Latency is healthy\033[0m"
+                            } else {
+                                print " No data points found."
+                            }
+                        }
+                    ' "$path/result.jtl"
+                    
+                # K6 ANALYSIS (Log Parsing)
+                elif [ -f "$path/execution.log" ] && grep -q "k6" "$path/execution.log"; then
+                    echo -e " Engine: ${CLR_CYAN}K6 (Go)${NC}"
+                    # Extract Summary Stats
+                    grep -A 10 "iteration_duration..." "$path/execution.log" | sed 's/^/ /'
+                    grep "iterations..........." "$path/execution.log" | sed 's/^/ /'
+                    echo ""
+                    
+                    # Check for Critical Errors
+                    errs=$(grep -c "ERRO" "$path/execution.log")
+                    if [ "$errs" -gt 0 ]; then
+                        echo -e " ${CLR_RED}[!] Found $errs Critical Errors in log.${NC}"
+                        grep "ERRO" "$path/execution.log" | head -n 3 | sed 's/^/   /'
+                    else
+                        echo -e " ${CLR_GREEN}[OK] No critical errors found.${NC}"
+                    fi
+                else
+                    echo -e " ${CLR_YELLOW}[!] Analysis data not available (Log missing).${NC}"
                 fi
-                echo -e "\n ${CLR_GREEN}Tip: Use SCP to download the 'dashboard' folder for full HTML graphs.${NC}"
+
+                echo -e "\n ${BOLD}📂 Artifacts:${NC}"
+                ls -1 "$path" | sed 's/^/  - /'
+                echo -e "\n ${CLR_GREEN}Tip: Use SCP to download reports for full details.${NC}"
             else
                  echo -e "\n ${CLR_RED}[!] Logs for this run have been deleted/expired.${NC}"
             fi
@@ -461,6 +509,10 @@ start_test() {
     fi
 
     s="PASS"; [ "$e" -gt 0 ] && s="FAIL"; [ "$s" == "PASS" ] && [ "$l" -gt 2000 ] && s="CRIT"; [ "$s" == "PASS" ] && [ "$l" -gt 500 ] && s="WARN";
+    
+    # Save Execution Log for Analysis
+    cp "$TEMP_LOG" "$C_R_DIR/execution.log"
+    
     echo "$LOG_TS,$t_ip,$MODE_NAME,$threads,$duration,$l,$e,$s,$C_R_DIR" >> "$HISTORY_FILE"
     echo -e "\n ${BOLD}${CLR_WHITE}MISSION COMPLETE.${NC} STATUS: ${BOLD}$s${NC}"
     read -p " Press Enter to return..."
